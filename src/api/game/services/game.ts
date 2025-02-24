@@ -7,17 +7,35 @@ import slugify from "slugify";
 import { factories } from "@strapi/strapi";
 import { JSDOM } from "jsdom";
 
-interface Product {
+interface Game {
   genres: { name: string }[];
   developers: string[];
   operatingSystems: string[];
+  price: {
+    finalMoney: {
+      amount: string;
+    };
+  };
   publishers: string[];
+  releaseDate: string;
+  slug: string;
+  title: string;
 }
 
-const DEVELOPER_SERVICE = "api::developer.developer";
-const PUBLISHER_SERVICE = "api::publisher.publisher";
 const CATEGORY_SERVICE = "api::category.category";
+const DEVELOPER_SERVICE = "api::developer.developer";
+const GAME_SERVICE = "api::game.game";
 const PLATAFORM_SERVICE = "api::plataform.plataform";
+const PUBLISHER_SERVICE = "api::publisher.publisher";
+
+const cleanGameDescription = (description: string) => {
+  const cleanedDescription = description
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleanedDescription;
+};
 
 const getGameInfo = async (slug: string) => {
   const gogSlug = slug.replace("-", "_").toLowerCase();
@@ -39,8 +57,8 @@ const getGameInfo = async (slug: string) => {
     : "BR0";
 
   return {
-    description,
-    shortDescription,
+    description: cleanGameDescription(description),
+    short_description: cleanGameDescription(shortDescription),
     rating,
   };
 };
@@ -68,13 +86,13 @@ const createSimpleInstance = async (name, entityService) => {
   });
 };
 
-const createAllProductsData = async (products: Product[]) => {
+const createAllProductsData = async (games: Game[]) => {
   const categoryNames = new Set<string>();
   const developerNames = new Set<string>();
   const plataformNames = new Set<string>();
   const publisherNames = new Set<string>();
 
-  products.forEach((product) => {
+  games.forEach((product) => {
     const {
       genres: categories,
       developers,
@@ -101,15 +119,64 @@ const createAllProductsData = async (products: Product[]) => {
   ]);
 };
 
+const createGame = async (games: Game[]) => {
+  const gamesPromises = games.map(
+    async ({
+      developers,
+      genres,
+      operatingSystems,
+      price,
+      publishers,
+      releaseDate,
+      slug,
+      title,
+    }) => {
+      const createdGame = await getByName(title, GAME_SERVICE);
+
+      if (createdGame) return;
+
+      const additionalGameInfo = await getGameInfo(slug);
+      console.log(additionalGameInfo);
+      const newGamePromise: Game = await strapi.service(GAME_SERVICE).create({
+        data: {
+          name: title,
+          slug,
+          price: price.finalMoney.amount,
+          release_date: new Date(releaseDate),
+          categories: await Promise.all(
+            genres.map(({ name }) => getByName(name, CATEGORY_SERVICE))
+          ),
+          plataforms: await Promise.all(
+            operatingSystems.map((name) => getByName(name, PLATAFORM_SERVICE))
+          ),
+          developers: await Promise.all(
+            developers.map((name) => getByName(name, DEVELOPER_SERVICE))
+          ),
+          publisher: await Promise.all(
+            publishers.map((name) => getByName(name, PUBLISHER_SERVICE))
+          ),
+          publishedAt: new Date(),
+          ...additionalGameInfo,
+        },
+      });
+
+      return newGamePromise;
+    }
+  );
+
+  await Promise.all(gamesPromises);
+};
+
 export default factories.createCoreService("api::game.game", () => ({
   populate: async (params) => {
     const gogApiUrl =
       "https://catalog.gog.com/v1/catalog?limit=48&order=desc%3Atrending";
 
     const {
-      data: { products },
-    } = await axios.get<{ products: Product[] }>(gogApiUrl);
+      data: { products: games },
+    } = await axios.get<{ products: Game[] }>(gogApiUrl);
 
-    createAllProductsData([products[2], products[3]]);
+    await createAllProductsData([games[1]]);
+    await createGame([games[1]]);
   },
 }));
