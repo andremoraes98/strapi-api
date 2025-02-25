@@ -8,7 +8,9 @@ import { factories } from "@strapi/strapi";
 import { JSDOM } from "jsdom";
 
 interface Game {
+  coverHorizontal: string;
   genres: { name: string }[];
+  id: string;
   developers: string[];
   operatingSystems: string[];
   price: {
@@ -18,6 +20,7 @@ interface Game {
   };
   publishers: string[];
   releaseDate: string;
+  screenshots: string[];
   slug: string;
   title: string;
 }
@@ -27,6 +30,11 @@ const DEVELOPER_SERVICE = "api::developer.developer";
 const GAME_SERVICE = "api::game.game";
 const PLATAFORM_SERVICE = "api::plataform.plataform";
 const PUBLISHER_SERVICE = "api::publisher.publisher";
+
+const treatException = (error) => {
+  const { data: { errors = null } = {} } = error;
+  return { error, data: errors };
+};
 
 const cleanGameDescription = (description: string) => {
   const cleanedDescription = description
@@ -40,37 +48,45 @@ const cleanGameDescription = (description: string) => {
 const getGameInfo = async (slug: string) => {
   const gogSlug = slug.replace("-", "_").toLowerCase();
 
-  const { data } = await axios.get(`https://www.gog.com/game/${gogSlug}`);
-  const {
-    window: { document },
-  } = new JSDOM(data);
-  const rawDescription = document.querySelector(".description");
-  const description = rawDescription.innerHTML;
-  const shortDescription = rawDescription.textContent.slice(0, 160);
+  try {
+    const { data } = await axios.get(`https://www.gog.com/game/${gogSlug}`);
+    const {
+      window: { document },
+    } = new JSDOM(data);
+    const rawDescription = document.querySelector(".description");
+    const description = rawDescription.innerHTML;
+    const shortDescription = rawDescription.textContent.slice(0, 160);
 
-  const ratingElement = document.querySelector(".age-restrictions__icon use");
-  const rating = ratingElement
-    ? ratingElement
-        .getAttribute("xlink:href")
-        .replace(/_/g, "")
-        .replace("#", "")
-    : "BR0";
+    const ratingElement = document.querySelector(".age-restrictions__icon use");
+    const rating = ratingElement
+      ? ratingElement
+          .getAttribute("xlink:href")
+          .replace(/_/g, "")
+          .replace("#", "")
+      : "BR0";
 
-  return {
-    description: cleanGameDescription(description),
-    short_description: cleanGameDescription(shortDescription),
-    rating,
-  };
+    return {
+      description: cleanGameDescription(description),
+      short_description: cleanGameDescription(shortDescription),
+      rating,
+    };
+  } catch (e) {
+    console.log("getGameInfo", treatException(e));
+  }
 };
 
 const getByName = async (name, entityService) => {
-  const {
-    results: [findedEntity = null],
-  } = await strapi.service(entityService).find({
-    filters: { name },
-  });
+  try {
+    const {
+      results: [findedEntity = null],
+    } = await strapi.service(entityService).find({
+      filters: { name },
+    });
 
-  return findedEntity;
+    return findedEntity;
+  } catch (e) {
+    console.log("getByName", treatException(e));
+  }
 };
 
 const createSimpleInstance = async (name, entityService) => {
@@ -119,15 +135,54 @@ const createAllProductsData = async (games: Game[]) => {
   ]);
 };
 
+const saveGameImages = async ({
+  image,
+  game,
+  field = "cover",
+}: {
+  image: string;
+  game: Game;
+  field: "cover" | "gallery";
+}) => {
+  try {
+    const { data } = await axios.get(image, { responseType: "arraybuffer" });
+    const buffer = Buffer.from(data, "base64");
+
+    const FormData = require("form-data");
+
+    const formData: any = new FormData();
+
+    formData.append("refId", game.id);
+    formData.append("ref", `${GAME_SERVICE}`);
+    formData.append("field", field);
+    formData.append("files", buffer, { filename: `${game.slug}.jpg` });
+
+    console.info(`Uploading ${field} image: ${game.slug}.jpg`);
+
+    await axios({
+      method: "POST",
+      url: `http://localhost:1337/api/upload/`,
+      data: formData,
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${formData._boundary}`,
+      },
+    });
+  } catch (e) {
+    console.log("saveGameImages", treatException(e));
+  }
+};
+
 const createGame = async (games: Game[]) => {
   const gamesPromises = games.map(
     async ({
+      coverHorizontal,
       developers,
       genres,
       operatingSystems,
       price,
       publishers,
       releaseDate,
+      screenshots,
       slug,
       title,
     }) => {
@@ -136,8 +191,7 @@ const createGame = async (games: Game[]) => {
       if (createdGame) return;
 
       const additionalGameInfo = await getGameInfo(slug);
-      console.log(additionalGameInfo);
-      const newGamePromise: Game = await strapi.service(GAME_SERVICE).create({
+      const newGame: Game = await strapi.service(GAME_SERVICE).create({
         data: {
           name: title,
           slug,
@@ -160,7 +214,26 @@ const createGame = async (games: Game[]) => {
         },
       });
 
-      return newGamePromise;
+      await saveGameImages({
+        image: coverHorizontal,
+        game: newGame,
+        field: "cover",
+      });
+
+      await Promise.all(
+        screenshots.slice(0, 5).map((url) =>
+          saveGameImages({
+            image: `${url.replace(
+              "{formatter}",
+              "product_card_v2_mobile_slider_639"
+            )}`,
+            game: newGame,
+            field: "gallery",
+          })
+        )
+      );
+
+      return newGame;
     }
   );
 
@@ -176,7 +249,7 @@ export default factories.createCoreService("api::game.game", () => ({
       data: { products: games },
     } = await axios.get<{ products: Game[] }>(gogApiUrl);
 
-    await createAllProductsData([games[1]]);
-    await createGame([games[1]]);
+    await createAllProductsData([games[0]]);
+    await createGame([games[0]]);
   },
 }));
