@@ -6,6 +6,7 @@ import axios from "axios";
 import slugify from "slugify";
 import { factories } from "@strapi/strapi";
 import { JSDOM } from "jsdom";
+import qs from "qs";
 
 interface Game {
   coverHorizontal: string;
@@ -242,14 +243,13 @@ const createGame = async (games: Game[]) => {
 
 export default factories.createCoreService("api::game.game", () => ({
   populate: async (params) => {
-    const gogApiUrl =
-      "https://catalog.gog.com/v1/catalog?limit=48&order=desc%3Atrending";
+    const gogApiUrl = `https://catalog.gog.com/v1/catalog?${qs.stringify(params)}`;
 
     const {
       data: { products: games },
     } = await axios.get<{ products: Game[] }>(gogApiUrl);
 
-    await createAllProductsData([games[0]]);
-    await createGame([games[0]]);
+    await createAllProductsData(games);
+    await createGame(games);
   },
 }));
